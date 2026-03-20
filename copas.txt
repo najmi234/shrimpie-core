@@ -1,4 +1,0 @@
-(.venv) jetson@nano:~/shrimpie-core$ python3 main.py
-🔥 Kamera aktif... tekan 'q' untuk keluar.
-Resolusi kamera: 640 x 360
-
