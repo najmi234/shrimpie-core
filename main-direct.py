@@ -2,15 +2,16 @@ import os
 import random
 import time
 from collections import deque
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List
 
 import cv2
 import joblib
 import pandas as pd
 import numpy as np
 from ultralytics import YOLO
+from vidgear.gears import WriteGear
 from centroid_tracker import CentroidTracker
-import os
+
 
 # ============================================================
 #  KONFIGURASI
@@ -44,7 +45,6 @@ class Config:
     # Recording
     RECORD_DURATION = 10  # detik
     OUTPUT_DIR      = "recordings"
-    RAW_OUTPUT_DIR = "raw_recordings"
 
 
 # ============================================================
@@ -148,6 +148,7 @@ def draw_bounding_box(
         cv2.FONT_HERSHEY_SIMPLEX, 0.3,
         config.COLOR_TEXT, 1,
     )
+
 
 def draw_tracking(
     frame: np.ndarray,
@@ -311,68 +312,6 @@ def process_frame(
     frame_display = cv2.resize(frame_out, (640, 360))
     return frame_display
 
-def process_video_file(
-    input_path,
-    output_path,
-    yolo_model,
-    model_length,
-    model_weight,
-    config
-):
-    print(f"⚙️ Processing video: {input_path}")
-
-    cap = cv2.VideoCapture(input_path)
-
-    os.makedirs(config.OUTPUT_DIR, exist_ok=True)
-
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-
-    writer = cv2.VideoWriter(
-        output_path,
-        fourcc,
-        20,
-        (640, 360)
-    )
-
-    tracker = CentroidTracker()
-    track_history = {}
-    track_color = {}
-
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
-
-        frame_out = process_frame(
-            frame,
-            yolo_model,
-            model_length,
-            model_weight,
-            tracker,
-            track_history,
-            track_color,
-            config
-        )
-
-        writer.write(frame_out)
-
-    cap.release()
-    writer.release()
-
-    writer.release()
-
-    # convert ke format web
-    final_output = output_path.replace(".mp4", "_web.mp4")
-
-    convert_to_web_format(output_path, final_output)
-
-    print(f"✅ Web video siap: {final_output}")
-
-    print(f"✅ Processing selesai: {output_path}")
-
-def convert_to_web_format(input_path, output_path):
-    cmd = f"ffmpeg -y -i {input_path} -vcodec libx264 -pix_fmt yuv420p -movflags +faststart {output_path}"
-    os.system(cmd)
 
 # ============================================================
 #  LOOP UTAMA
@@ -421,8 +360,15 @@ def run(config: Config = None) -> None:
             fps = 1.0 / (now - prev_time) if now != prev_time else 0.0
             prev_time = now
 
-            cv2.putText(
+            frame_out = process_frame(
                 frame,
+                yolo_model, model_length, model_weight,
+                tracker, track_history, track_color,
+                config,
+            )
+
+            cv2.putText(
+                frame_out,
                 f"FPS: {fps:.1f}",
                 (7, 14),
                 cv2.FONT_HERSHEY_SIMPLEX,
@@ -431,20 +377,20 @@ def run(config: Config = None) -> None:
                 1,
             )
 
-            cv2.imshow(config.WINDOW_TITLE, frame)
+            cv2.imshow(config.WINDOW_TITLE, frame_out)
 
             # ========================
             # RECORDING LOGIC
             # ========================
             if recording:
                 # VidGear menggunakan metode .write() yang sama dengan OpenCV
-                video_writer.write(frame)
+                video_writer.write(frame_out)
 
                 elapsed = time.time() - record_start_time
 
                 # Tampilkan indikator recording
                 cv2.putText(
-                    frame,
+                    frame_out,
                     f"REC {elapsed:.1f}s",
                     (500, 30), # Sedikit turun agar tidak terpotong
                     cv2.FONT_HERSHEY_SIMPLEX,
@@ -455,46 +401,33 @@ def run(config: Config = None) -> None:
 
                 if elapsed >= config.RECORD_DURATION:
                     print("✅ Recording selesai!")
-
                     recording = False
-
-                    # 1. TUTUP FILE DULU (WAJIB)
-                    video_writer.release()
+                    # VidGear menggunakan .close() bukan .release()
+                    video_writer.close()
                     video_writer = None
-
-                    # 2. BARU PROCESS
-                    raw_video_path = raw_filepath
-                    processed_path = os.path.join(config.OUTPUT_DIR, filename)
-
-                    process_video_file(
-                        raw_video_path,
-                        processed_path,
-                        yolo_model,
-                        model_length,
-                        model_weight,
-                        config
-                    )
 
             key = cv2.waitKey(1) & 0xFF
 
             if key == ord("p") and not recording:
-                print("⏺️ Recording RAW started...")
+                print("⏺️ Recording started (H.264 Web-Ready)...")
 
                 recording = True
                 record_start_time = time.time()
 
                 filename = time.strftime("%d%m%Y-%H%M") + ".mp4"
-                raw_filepath = os.path.join(config.RAW_OUTPUT_DIR, filename)
+                filepath = os.path.join(config.OUTPUT_DIR, filename)
 
-                os.makedirs(config.RAW_OUTPUT_DIR, exist_ok=True)
+                # Definisikan parameter FFmpeg agar video bisa diputar di Website
+                output_params = {
+                    "-vcodec": "libx264",    # Codec standar browser
+                    "-crf": 20,              # Kualitas (18-28 adalah sweet spot)
+                    "-preset": "veryfast",   # Ringan untuk CPU
+                    "-pix_fmt": "yuv420p",   # WAJIB untuk kompatibilitas web
+                    "-movflags": "+faststart" # Metadata di depan agar video cepat loading
+                }
 
-                # Gunakan codec ringan dulu (biar Jetson nggak ngangkat)
-                video_writer = cv2.VideoWriter(
-                    raw_filepath,
-                    cv2.VideoWriter_fourcc(*"mp4v"),
-                    20,
-                    (640, 360)
-                )
+                # Inisialisasi WriteGear (Ganti cv2.VideoWriter)
+                video_writer = WriteGear(output=filepath, **output_params)
 
             if key == ord("q"):
                 break
