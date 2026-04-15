@@ -11,6 +11,7 @@ import numpy as np
 from ultralytics import YOLO
 from centroid_tracker import CentroidTracker
 import os
+import Jetson.GPIO as GPIO
 
 # ============================================================
 #  KONFIGURASI
@@ -35,7 +36,7 @@ class Config:
 
     # Warna
     COLOR_BBOX            = (255, 255, 0)   # Cyan
-    COLOR_TEXT            = (255, 255, 0)
+    COLOR_TEXT            = (0, 0, 0)
 
     # Kamera
     CAMERA_INDEX          = 0
@@ -45,6 +46,8 @@ class Config:
     RECORD_DURATION = 10  # detik
     OUTPUT_DIR      = "recordings"
     RAW_OUTPUT_DIR = "raw_recordings"
+
+    BUTTON_PIN = 18
 
 
 # ============================================================
@@ -330,7 +333,7 @@ def process_video_file(
     writer = cv2.VideoWriter(
         output_path,
         fourcc,
-        20,
+        30,
         (640, 360)
     )
 
@@ -359,14 +362,16 @@ def process_video_file(
     cap.release()
     writer.release()
 
-    writer.release()
-
     # convert ke format web
-    final_output = output_path.replace(".mp4", "_web.mp4")
+    final_output = output_path.replace(".mp4", "_web1.mp4")
 
     convert_to_web_format(output_path, final_output)
 
     print(f"✅ Web video siap: {final_output}")
+
+    if os.path.exists(output_path):
+        os.remove(output_path)
+        print(f"🗑️ Menghapus file sementara: {output_path}")
 
     print(f"✅ Processing selesai: {output_path}")
 
@@ -377,6 +382,13 @@ def convert_to_web_format(input_path, output_path):
 # ============================================================
 #  LOOP UTAMA
 # ============================================================
+
+def setup_gpio(config: Config):
+    """Inisialisasi GPIO dengan internal pull-up."""
+    GPIO.setmode(GPIO.BCM)
+    # Panggil pin dari class Config
+    GPIO.setup(config.BUTTON_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+    print(f"Boton GPIO siap di Pin: {config.BUTTON_PIN}")
 
 def run(config: Config = None) -> None:
     """Entry point utama aplikasi deteksi udang."""
@@ -391,8 +403,11 @@ def run(config: Config = None) -> None:
 
     # Buka kamera
     cap = cv2.VideoCapture(config.CAMERA_INDEX)
+    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 360)
+    real_fps = cap.get(cv2.CAP_PROP_FPS)
+    print(f"🎥 FPS kamera terdeteksi: {real_fps}")
     if not cap.isOpened():
         raise RuntimeError(f"❌ Kamera index {config.CAMERA_INDEX} tidak bisa dibuka!")
 
@@ -410,12 +425,22 @@ def run(config: Config = None) -> None:
     os.makedirs(config.OUTPUT_DIR, exist_ok=True)
 
     prev_time = time.time()
+
+    setup_gpio(config)
+    prev_button_state = GPIO.HIGH
     try:
         while True:
             ret, frame = cap.read()
             if not ret:
                 print("⚠️  Gagal membaca frame kamera!")
                 break
+    
+            # --- LOGIKA TOMBOL GPIO ---
+            current_button_state = GPIO.input(config.BUTTON_PIN)
+            
+            # Deteksi Falling Edge (Dari tidak ditekan ke ditekan)
+            button_pressed = (current_button_state == GPIO.LOW and prev_button_state == GPIO.HIGH)
+            prev_button_state = current_button_state
 
             now = time.time()
             fps = 1.0 / (now - prev_time) if now != prev_time else 0.0
@@ -437,7 +462,6 @@ def run(config: Config = None) -> None:
             # RECORDING LOGIC
             # ========================
             if recording:
-                # VidGear menggunakan metode .write() yang sama dengan OpenCV
                 video_writer.write(frame)
 
                 elapsed = time.time() - record_start_time
@@ -478,6 +502,7 @@ def run(config: Config = None) -> None:
             key = cv2.waitKey(1) & 0xFF
 
             if key == ord("p") and not recording:
+            # if button_pressed and not recording:
                 print("⏺️ Recording RAW started...")
 
                 recording = True
@@ -492,7 +517,7 @@ def run(config: Config = None) -> None:
                 video_writer = cv2.VideoWriter(
                     raw_filepath,
                     cv2.VideoWriter_fourcc(*"mp4v"),
-                    20,
+                    real_fps,
                     (640, 360)
                 )
 
@@ -501,6 +526,7 @@ def run(config: Config = None) -> None:
 
     finally:
         cap.release()
+        GPIO.cleanup()
         cv2.destroyAllWindows()
         print("✅ Kamera dilepas, program selesai.")
 

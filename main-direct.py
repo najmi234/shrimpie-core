@@ -36,7 +36,7 @@ class Config:
 
     # Warna
     COLOR_BBOX            = (255, 255, 0)   # Cyan
-    COLOR_TEXT            = (255, 255, 0)
+    COLOR_TEXT            = (0, 0, 0)
 
     # Kamera
     CAMERA_INDEX          = 0
